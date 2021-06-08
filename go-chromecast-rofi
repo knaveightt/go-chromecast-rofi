@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+#
+# NAME
+#    go-chromecast-rofi.sh - Load playlists and execute common commands using rofi
+#
+# SYNOPSIS
+#    Run the script standalone, or via shortcut through your favorite window manager
+#    ./go-chromecast-dmenu.sh
+#
+# DEPENDENCIES
+#    1) Rofi - for a dmenu-like experience
+#       (https://github.com/davatorium/rofi)
+#    2) Dunst - for notifications / feedback based on chosen menu options
+#       (https://github.com/dunst-project/dunst)
+#    3) vishen's go-chromecast program 
+#       (https://github.com/vishen/go-chromecast)
+#
+# DESCRIPTION
+#    There are 4 main options to choose through rofi when executing this script.
+#    1) Load Playlist
+#       - Must have a $PLAYLISTCONFIG file located in $PLAYLISTDIR (see vars below)
+#         that has 1 directory on each line of the file. The meny will allow you to chose
+#         one of the directories listed in the file, and attempt to cast all videos in that
+#         directory as a playlist
+#    2) Cast Controls
+#       - Pause / Play / Next / Previous
+#    3) Launch TUI
+#       - Launch a terminal wiht the TUI for monitoring cast / controls
+#    4) Device Lookup
+#       - Return a notification with a selected device's status
+#
+# BUGS
+#    Submit via my github page (knaveightt/go-chromecast-rofi)
+#
+# COPYRIGHT AND LICENSE
+#    Copyright (C) 2021 John Osinski
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+################################################################################
+# prepare for anything that may fail, handle accordingly
+set -euo pipefail
+
+# define our config variables
+PLAYLISTDIR="$HOME/Prog/go-chromecast/dmenu/"
+PLAYLISTCONFIG="playlists.cfg"
+TERMEXECMD="st -e"
+
+# updated when the find functions (below) execute
+_playlists=""
+_devices=""
+
+# define where errors go
+err () {
+	echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')] !ERROR: $*" >&2
+}
+
+# initialize function
+# checks if directories and playlists exist, loads device information
+initialize () {
+	# check if playlist directory exists
+	if [ ! -d "${PLAYLISTDIR}" ]; then
+	       	err "Playlist directory could not be found. Please create ${PLAYLISTDIR}."
+		exit 1
+	fi
+
+	# check if playlist file exists in playlists directory
+	if [ ! -f "${PLAYLISTDIR}/${PLAYLISTCONFIG}" ]; then
+		err "Playlist file cound not be found. Please create ${PLAYLISTDIR}/${PLAYLISTCONFIG}."
+		exit 1
+	fi
+}
+
+find_devices () {
+	# gets device information for connected devices
+	# TODO(knaveightt): Test with more than 1 device present, and no device present
+	dunstify "Detecting Chromecast Devices, Please Wait..."
+	readarray -t _devices < <(go-chromecast ls | awk 'BEGIN { FS = "=" } ; {print $3}' | sed 's/ address//g')
+}
+
+find_playlists () {
+	# read playlists file to get list of playlist directories
+	mapfile -t _playlists < "${PLAYLISTDIR}/${PLAYLISTCONFIG}"
+}
+
+# start main execution
+main() {
+	# initialize
+	initialize
+
+	# show the initial menu, get an option choice
+	local menu=(
+	  "Load Playlist"
+	  "Cast Controls"
+	  "Launch TUI"
+	  "Device Lookup"
+	)
+	choice=$(printf '%s\n' "${menu[@]}" | rofi -dmenu -p "Chromecast")
+
+
+	# execute menu actions
+	if [ "$choice" == "Launch TUI" ]; then
+		local launch="${TERMEXECMD} go-chromecast ui"
+		eval "$launch"
+
+	elif [ "$choice" == "Device Lookup" ]; then
+		find_devices
+		local device=$(printf '%s\n' "${_devices[@]}" | rofi -dmenu -p "Choose a Device")
+		local status=$(eval go-chromecast status -n "${device}")
+		dunstify "$status"
+
+	elif [ "$choice" == "Cast Controls" ]; then
+		find_devices
+		local device=$(printf '%s\n' "${_devices[@]}" | rofi -dmenu -p "Choose a Device")
+		
+		local actions=(
+		  "pause"
+		  "play"
+		  "next"
+		  "previous"
+		)
+		action=$(printf '%s\n' "${actions[@]}" | rofi -dmenu -p "Select Action")
+		eval go-chromecast "${action}" -n "${device}"
+	
+	elif [ "$choice" == "Load Playlist" ]; then
+		find_devices
+		local device=$(printf '%s\n' "${_devices[@]}" | rofi -dmenu -p "Choose a Device")
+		find_playlists
+		local playlist=$(printf '%s\n' "${_playlists[@]}" | rofi -dmenu -theme dmenu-list -p "Choose a Playlist")
+		#TODO(knaveightt): error checking if playlist is empty or invalid
+		eval go-chromecast playlist "${playlist}" -n "${device} --force-play" && exit 0
+
+	else
+		echo "Nothing left to do. Exiting." && exit 0
+	fi
+}
+main
